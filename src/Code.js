@@ -44,11 +44,18 @@ function exportEmailsToSheet() {
       continue;
     }
     
+    // Extract attachment names
+    const attachments = latestMessage.getAttachments();
+    const attachmentNames = attachments.map(function(att) {
+      return att.getName();
+    }).join(", ");
+    
     emailData.push([
       date,
       sender,
       subject,
-      snippet
+      snippet,
+      attachmentNames
     ]);
   }
   
@@ -69,15 +76,15 @@ function exportEmailsToSheet() {
   sheet.clear();
   
   // Set headers
-  sheet.appendRow(["Date", "Sender", "Subject", "Snippet"]);
+  sheet.appendRow(["Date", "Sender", "Subject", "Snippet", "Attachments"]);
   
   if (emailData.length > 0) {
-    sheet.getRange(2, 1, emailData.length, 4).setValues(emailData);
+    sheet.getRange(2, 1, emailData.length, 5).setValues(emailData);
   }
   
   // Format the sheet
-  sheet.getRange(1, 1, 1, 4).setFontWeight("bold").setBackground("#f3f3f3");
-  sheet.autoResizeColumns(1, 4);
+  sheet.getRange(1, 1, 1, 5).setFontWeight("bold").setBackground("#f3f3f3");
+  sheet.autoResizeColumns(1, 5);
   
   const url = ss.getUrl();
   Logger.log("Emails exported successfully. Google Sheet URL: " + url);
