@@ -61,15 +61,23 @@ function exportEmailsToSheet() {
   
   Logger.log("Filtered down to " + emailData.length + " non-social/non-promotional emails.");
   
-  // Create or open the spreadsheet
+  // Create or open the spreadsheet using user properties to store the ID
   const sheetName = "Email Audit Data";
   let ss;
-  const files = DriveApp.getFilesByName(sheetName);
+  const userProperties = PropertiesService.getUserProperties();
+  const spreadsheetId = userProperties.getProperty("SPREADSHEET_ID");
   
-  if (files.hasNext()) {
-    ss = SpreadsheetApp.open(files.next());
+  if (spreadsheetId) {
+    try {
+      ss = SpreadsheetApp.openById(spreadsheetId);
+    } catch (e) {
+      Logger.log("Stored spreadsheet ID not found or inaccessible. Creating a new one...");
+      ss = SpreadsheetApp.create(sheetName);
+      userProperties.setProperty("SPREADSHEET_ID", ss.getId());
+    }
   } else {
     ss = SpreadsheetApp.create(sheetName);
+    userProperties.setProperty("SPREADSHEET_ID", ss.getId());
   }
   
   const sheet = ss.getSheets()[0];
