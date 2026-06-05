@@ -335,10 +335,10 @@ Instructions:
 }
 
 /**
- * Helper to call the Google Gemini API (gemini-1.5-flash)
+ * Helper to call the Google Gemini API (gemini-3.5-flash)
  */
 function callGeminiApi(apiKey, parts) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`;
   
   const payload = {
     contents: [{
