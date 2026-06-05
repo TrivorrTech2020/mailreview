@@ -474,3 +474,14 @@ function resetLastProcessedTime() {
   PropertiesService.getUserProperties().deleteProperty("LAST_PROCESSED_TIMESTAMP");
   Logger.log("State reset. Next run will start from 7 days ago.");
 }
+
+/**
+ * Temp function to list models available to this API key to resolve the 404.
+ */
+function testListModels() {
+  const apiKey = getGeminiApiKey();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
+  const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  Logger.log("Status: " + response.getResponseCode());
+  Logger.log("Body: " + response.getContentText().substring(0, 1500)); // Truncate log slightly
+}
