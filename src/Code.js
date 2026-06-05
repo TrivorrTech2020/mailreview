@@ -356,16 +356,38 @@ function callGeminiApi(apiKey, parts) {
     muteHttpExceptions: true
   };
   
-  const response = UrlFetchApp.fetch(url, options);
-  const code = response.getResponseCode();
-  const resText = response.getContentText();
+  const maxRetries = 5;
+  let delay = 1000; // start with 1 second delay
   
-  if (code !== 200) {
-    throw new Error(`Gemini API call failed with status ${code}: ${resText}`);
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      const code = response.getResponseCode();
+      const resText = response.getContentText();
+      
+      if (code === 200) {
+        const json = JSON.parse(resText);
+        return json.candidates[0].content.parts[0].text;
+      }
+      
+      // Retry on 503 (Temporary Overload) or 429 (Rate Limit)
+      if ((code === 503 || code === 429) && attempt < maxRetries) {
+        Logger.log(`Gemini API returned status ${code}. Retrying in ${delay}ms... (Attempt ${attempt}/${maxRetries})`);
+        Utilities.sleep(delay);
+        delay *= 2; // double the delay duration
+        continue;
+      }
+      
+      throw new Error(`Gemini API call failed with status ${code}: ${resText}`);
+    } catch (err) {
+      if (attempt === maxRetries) {
+        throw err;
+      }
+      Logger.log(`Request error: ${err.message}. Retrying in ${delay}ms... (Attempt ${attempt}/${maxRetries})`);
+      Utilities.sleep(delay);
+      delay *= 2;
+    }
   }
-  
-  const json = JSON.parse(resText);
-  return json.candidates[0].content.parts[0].text;
 }
 
 /**
