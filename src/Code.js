@@ -29,7 +29,7 @@ function exportEmailsToSheet() {
     const sender = latestMessage.getFrom();
     const subject = latestMessage.getSubject();
     const date = latestMessage.getDate();
-    const snippet = latestMessage.getSnippet();
+    const snippet = latestMessage.getPlainBody().substring(0, 300);
     
     // Check if the sender is from a social domain
     let isSocial = false;
