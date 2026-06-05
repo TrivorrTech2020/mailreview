@@ -39,12 +39,11 @@ function processEmails() {
   }
   
   // Search Gmail for both incoming and outgoing messages since last run (formatted as YYYY/MM/DD)
-  // We search 1 day before the timestamp to be safe against timezone boundaries, then filter precisely in code.
   const searchDate = new Date(lastProcessedTime - 24 * 60 * 60 * 1000);
   const formattedSearchDate = searchDate.getFullYear() + "/" + (searchDate.getMonth() + 1) + "/" + searchDate.getDate();
   
-  // Exclude promotions, social, and specific sender karang@sgfinfra.com
-  const incomingQuery = `in:inbox -category:promotions -category:social -from:karang@sgfinfra.com after:${formattedSearchDate}`;
+  // Query excludes promotions and social
+  const incomingQuery = `in:inbox -category:promotions -category:social after:${formattedSearchDate}`;
   const outgoingQuery = `in:sent after:${formattedSearchDate}`;
   
   Logger.log("Searching incoming: " + incomingQuery);
@@ -88,7 +87,7 @@ function processEmails() {
   
   // Sort messages chronologically (oldest first) so we process and save state sequentially
   messagesToProcess.sort((a, b) => a.time - b.time);
-  Logger.log("Found " + messagesToProcess.length + " new messages to process.");
+  Logger.log("Found " + messagesToProcess.length + " new messages to process (pre-filtering).");
   
   if (messagesToProcess.length === 0) {
     Logger.log("No new emails to process.");
@@ -97,6 +96,7 @@ function processEmails() {
   
   const apiKey = getGeminiApiKey();
   let maxTimeSaved = lastProcessedTime;
+  let processedCount = 0;
   
   for (let i = 0; i < messagesToProcess.length; i++) {
     const item = messagesToProcess[i];
@@ -106,9 +106,27 @@ function processEmails() {
     const date = msg.getDate();
     const subject = msg.getSubject();
     const sender = msg.getFrom();
+    const to = msg.getTo() || "";
+    const cc = msg.getCc() || "";
+    const bcc = msg.getBcc() || "";
     const body = msg.getPlainBody() || "";
     
-    Logger.log(`Processing (${item.type}) [${i+1}/${messagesToProcess.length}] Subject: "${subject}" from/to: ${sender}`);
+    // Explicit ignore check for karang@sgfinfra.com in any of the metadata fields
+    const isIgnored = sender.toLowerCase().indexOf("karang@sgfinfra.com") !== -1 ||
+                      to.toLowerCase().indexOf("karang@sgfinfra.com") !== -1 ||
+                      cc.toLowerCase().indexOf("karang@sgfinfra.com") !== -1 ||
+                      bcc.toLowerCase().indexOf("karang@sgfinfra.com") !== -1;
+                      
+    if (isIgnored) {
+      Logger.log(`SKIPPED: Ignored email from/to/cc/bcc containing karang@sgfinfra.com ("${subject}")`);
+      // Update maxTimeSaved so we don't scan this skipped email again in the next run
+      maxTimeSaved = item.time;
+      userProperties.setProperty("LAST_PROCESSED_TIMESTAMP", maxTimeSaved.toString());
+      continue;
+    }
+    
+    processedCount++;
+    Logger.log(`Processing (${item.type}) [${processedCount} processed] Subject: "${subject}"`);
     
     // Extract attachments (Focusing on PDFs and Images under 3.5MB)
     const attachments = msg.getAttachments();
@@ -118,8 +136,6 @@ function processEmails() {
     attachments.forEach(att => {
       const sizeMB = att.getSize() / (1024 * 1024);
       const mime = att.getContentType().toLowerCase();
-      
-      // Focus on PDFs and Image formats
       const isSupportedMime = mime.indexOf("pdf") !== -1 || mime.indexOf("image") !== -1;
       
       if (isSupportedMime && sizeMB < 3.5) {
@@ -142,7 +158,7 @@ function processEmails() {
     
     if (item.type === "INCOMING") {
       // 4. Process Incoming Email
-      const analysis = analyzeIncomingEmail(apiKey, sender, subject, body, attachmentNames, attachmentParts);
+      const analysis = analyzeIncomingEmail(apiKey, sender, to, cc, bcc, subject, body, attachmentNames, attachmentParts);
       
       let status = "No Action Needed";
       if (analysis.replyRequired) {
@@ -155,6 +171,9 @@ function processEmails() {
         "INCOMING",
         date,
         sender,
+        to,
+        cc,
+        bcc,
         subject,
         body.substring(0, 1000), // Truncate slightly in sheet cell
         attachmentNames,
@@ -168,7 +187,6 @@ function processEmails() {
       
       sheet.appendRow(newRow);
       
-      // Add to local list of pending notices if it requires a reply
       if (status === "Pending") {
         db.pendingNotices.push({
           rowNum: sheet.getLastRow(),
@@ -181,12 +199,11 @@ function processEmails() {
       
     } else {
       // 5. Process Outgoing Email
-      // Match against existing pending notices using semantic analysis
       let matchedId = "";
       let matchedIndex = -1;
       
       if (db.pendingNotices.length > 0) {
-        const matchResult = matchOutgoingToNotices(apiKey, sender, subject, body, attachmentNames, attachmentParts, db.pendingNotices);
+        const matchResult = matchOutgoingToNotices(apiKey, sender, to, cc, bcc, subject, body, attachmentNames, attachmentParts, db.pendingNotices);
         if (matchResult.isReply && matchResult.matchedIncomingMessageId) {
           matchedId = matchResult.matchedIncomingMessageId;
           matchedIndex = db.pendingNotices.findIndex(p => p.msgId === matchedId);
@@ -195,9 +212,9 @@ function processEmails() {
             const pendingNotice = db.pendingNotices[matchedIndex];
             Logger.log(`SUCCESS: Outgoing email matched to incoming notice ID ${matchedId} on row ${pendingNotice.rowNum}`);
             
-            // Update the status of the matched notice row to "Replied"
-            sheet.getRange(pendingNotice.rowNum, 13).setValue("Replied"); // Status column
-            sheet.getRange(pendingNotice.rowNum, 14).setValue(msgId);     // Matched Reply ID column
+            // Update the status of the matched notice row to "Replied" (Status is column 16, Matched Reply ID is column 17)
+            sheet.getRange(pendingNotice.rowNum, 16).setValue("Replied");
+            sheet.getRange(pendingNotice.rowNum, 17).setValue(msgId);
             
             // Remove from local pending list
             db.pendingNotices.splice(matchedIndex, 1);
@@ -211,6 +228,9 @@ function processEmails() {
         "OUTGOING",
         date,
         sender,
+        to,
+        cc,
+        bcc,
         subject,
         body.substring(0, 1000),
         attachmentNames,
@@ -242,11 +262,14 @@ function processEmails() {
 /**
  * Sends incoming email data to Gemini to extract metadata.
  */
-function analyzeIncomingEmail(apiKey, sender, subject, body, attachmentNames, attachmentParts) {
+function analyzeIncomingEmail(apiKey, sender, to, cc, bcc, subject, body, attachmentNames, attachmentParts) {
   const prompt = `Analyze this incoming email (and any attached documents/images) for SGF Infra Private Limited.
 Evaluate both the email body and the attachment content to categorize the email and extract key information.
 
-Sender: ${sender}
+From: ${sender}
+To: ${to}
+CC: ${cc}
+BCC: ${bcc}
 Subject: ${subject}
 Attachment Names: ${attachmentNames}
 Email Body:
@@ -293,7 +316,7 @@ Return the result in JSON format matching this schema:
 /**
  * Matches an outgoing email semantically to one of our pending incoming notices.
  */
-function matchOutgoingToNotices(apiKey, sender, subject, body, attachmentNames, attachmentParts, pendingNotices) {
+function matchOutgoingToNotices(apiKey, sender, to, cc, bcc, subject, body, attachmentNames, attachmentParts, pendingNotices) {
   const noticesText = pendingNotices.map((n, idx) => {
     return `${idx + 1}. [Message ID: ${n.msgId}]
    From: ${n.sender}
@@ -307,7 +330,10 @@ Note: Our office does NOT always click "Reply". They might send a completely fre
 
 ---
 OUTGOING EMAIL DETAILS:
-To/From: ${sender}
+From: ${sender}
+To: ${to}
+CC: ${cc}
+BCC: ${bcc}
 Subject: ${subject}
 Attachment Names: ${attachmentNames}
 Body:
@@ -422,24 +448,35 @@ function getDatabaseSheet() {
   
   const sheet = ss.getSheets()[0];
   
+  const headers = [
+    "Message ID", 
+    "Thread ID", 
+    "Type", 
+    "Date", 
+    "From", 
+    "To", 
+    "CC", 
+    "BCC", 
+    "Subject", 
+    "Snippet / Body", 
+    "Attachment Names", 
+    "Category", 
+    "Summary", 
+    "Expected Action", 
+    "Reply Required?", 
+    "Status", 
+    "Matched Reply ID"
+  ];
+  
+  // Rebuild/reset if the old format is detected
+  if (sheet.getLastRow() > 0 && sheet.getRange(1, 5).getValue() === "Sender / Recipient") {
+    Logger.log("Old database format detected. Re-initializing headers and resetting state...");
+    sheet.clear();
+    resetLastProcessedTime();
+  }
+  
   // Set up headers if it is a new/empty sheet
   if (sheet.getLastRow() === 0) {
-    const headers = [
-      "Message ID", 
-      "Thread ID", 
-      "Type", 
-      "Date", 
-      "Sender / Recipient", 
-      "Subject", 
-      "Snippet / Body", 
-      "Attachment Names", 
-      "Category", 
-      "Summary", 
-      "Expected Action", 
-      "Reply Required?", 
-      "Status", 
-      "Matched Reply ID"
-    ];
     sheet.appendRow(headers);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setBackground("#f3f3f3");
     sheet.autoResizeColumns(1, headers.length);
@@ -458,16 +495,16 @@ function loadDatabaseRecords(sheet) {
   const pendingNotices = [];
   
   if (lastRow > 1) {
-    const data = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+    const data = sheet.getRange(2, 1, lastRow - 1, 17).getValues();
     data.forEach((row, index) => {
       const rowNum = index + 2; // Offset for header (1) and 0-indexing (1)
       const msgId = row[0];
       const type = row[2];
-      const sender = row[4];
-      const subject = row[5];
-      const category = row[8];
-      const summary = row[9];
-      const status = row[12];
+      const sender = row[4];   // From
+      const subject = row[8];  // Subject
+      const category = row[11]; // Category
+      const summary = row[12];  // Summary
+      const status = row[15];   // Status
       
       records.push({
         rowNum: rowNum,
