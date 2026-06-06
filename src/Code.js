@@ -119,7 +119,6 @@ function processEmails() {
                       
     if (isIgnored) {
       Logger.log(`SKIPPED: Ignored email from/to/cc/bcc containing karang@sgfinfra.com ("${subject}")`);
-      // Update maxTimeSaved so we don't scan this skipped email again in the next run
       maxTimeSaved = item.time;
       userProperties.setProperty("LAST_PROCESSED_TIMESTAMP", maxTimeSaved.toString());
       continue;
@@ -179,6 +178,8 @@ function processEmails() {
         attachmentNames,
         analysis.category,
         analysis.summary,
+        analysis.letterReferenceNo || "N/A",
+        analysis.letterDate || "N/A",
         analysis.expectedAction,
         analysis.replyRequired ? "Yes" : "No",
         status,
@@ -193,7 +194,9 @@ function processEmails() {
           msgId: msgId,
           sender: sender,
           subject: subject,
-          summary: analysis.summary
+          summary: analysis.summary,
+          letterReferenceNo: analysis.letterReferenceNo || "N/A",
+          letterDate: analysis.letterDate || "N/A"
         });
       }
       
@@ -212,9 +215,9 @@ function processEmails() {
             const pendingNotice = db.pendingNotices[matchedIndex];
             Logger.log(`SUCCESS: Outgoing email matched to incoming notice ID ${matchedId} on row ${pendingNotice.rowNum}`);
             
-            // Update the status of the matched notice row to "Replied" (Status is column 16, Matched Reply ID is column 17)
-            sheet.getRange(pendingNotice.rowNum, 16).setValue("Replied");
-            sheet.getRange(pendingNotice.rowNum, 17).setValue(msgId);
+            // Update the status of the matched notice row to "Replied" (Status is column 18, Matched Reply ID is column 19)
+            sheet.getRange(pendingNotice.rowNum, 18).setValue("Replied");
+            sheet.getRange(pendingNotice.rowNum, 19).setValue(msgId);
             
             // Remove from local pending list
             db.pendingNotices.splice(matchedIndex, 1);
@@ -236,6 +239,8 @@ function processEmails() {
         attachmentNames,
         "N/A",
         `Sent email: ${subject}`,
+        "N/A", // Letter Reference No
+        "N/A", // Letter Date
         "N/A",
         "No",
         "No Action Needed",
@@ -280,13 +285,16 @@ Instructions:
    - General News & PR (Publications, newsletters)
    - Other
    *Special Rule: If the email is from "bro-vjk@nic.in", classify it as "Project Execution".*
-2. Identify if this email is a formal notice, correspondence, or invoice from a client/vendor/department that requires a reply or action from our office.
-3. Write a concise summary and outline the expected action from us.
+2. Identify and extract the official Letter Reference Number and the official Letter Date (from the letter text itself or its header, NOT the email date/subject) if available. If none are found, return 'N/A'.
+3. Identify if this email requires a reply/submission from our office.
+4. Write a concise summary and expected action from us.
 
 Return the result in JSON format matching this schema:
 {
   "category": "String (one of the categories above)",
   "summary": "String (concise summary of the notice/attachment)",
+  "letterReferenceNo": "String (letter reference number or 'N/A')",
+  "letterDate": "String (date of the letter document itself, e.g. '04-Jun-2026', or 'N/A')",
   "expectedAction": "String (details of what we need to do)",
   "replyRequired": boolean (true if a reply/submission is required from our office, false otherwise)
 }`;
@@ -301,6 +309,8 @@ Return the result in JSON format matching this schema:
     return {
       category: "Other",
       summary: "Failed to parse summary. Subject: " + subject,
+      letterReferenceNo: "N/A",
+      letterDate: "N/A",
       expectedAction: "Review manually",
       replyRequired: false
     };
@@ -315,12 +325,14 @@ function matchOutgoingToNotices(apiKey, sender, to, cc, bcc, subject, body, atta
     return `${idx + 1}. [Message ID: ${n.msgId}]
    From: ${n.sender}
    Subject: ${n.subject}
+   Letter Ref No: ${n.letterReferenceNo}
+   Letter Date: ${n.letterDate}
    Summary: ${n.summary}`;
   }).join("\n---\n");
 
   const prompt = `Review this outgoing email sent by our office (including any attachments) and decide if it is a reply or response to any of the pending incoming notices listed below.
   
-Note: Our office does NOT always click "Reply". They might send a completely fresh email, but the subject line, email body, or attachment contents will refer to the same project, letter, or request.
+Note: Our office does NOT always click "Reply". They might send a completely fresh email, but the subject line, email body, or attachment contents will refer to the same project, letter, or request, and might reference the original notice's Letter Reference Number or Date.
 
 ---
 OUTGOING EMAIL DETAILS:
@@ -338,7 +350,7 @@ PENDING NOTICES LIST:
 ${noticesText}
 
 Instructions:
-1. Carefully compare the Outgoing Email (subject, project names mentioned in body, attachment file names, etc.) with the Pending Notices List.
+1. Carefully compare the Outgoing Email (subject, project names mentioned in body, attachment file names, and specifically search for any reference numbers/dates like ${pendingNotices.map(n=>n.letterReferenceNo).join(', ')}) with the Pending Notices List.
 2. Determine if this outgoing email is a response, document submission, or reply addressing one of the pending notices.
 3. Return the result in JSON format matching this schema:
 {
@@ -453,15 +465,17 @@ function getDatabaseSheet() {
     "Attachment Names", 
     "Category", 
     "Summary", 
+    "Letter Reference No",
+    "Letter Date",
     "Expected Action", 
     "Reply Required?", 
     "Status", 
     "Matched Reply ID"
   ];
   
-  // Rebuild/reset if the old format is detected
-  if (sheet.getLastRow() > 0 && sheet.getRange(1, 5).getValue() === "Sender / Recipient") {
-    Logger.log("Old database format detected. Re-initializing headers and resetting state...");
+  // Rebuild/reset if the old format is detected (if column 14 is NOT Letter Reference No)
+  if (sheet.getLastRow() > 0 && sheet.getRange(1, 14).getValue() !== "Letter Reference No") {
+    Logger.log("Upgraded schema (Letter Ref/Date) detected. Re-initializing headers...");
     sheet.clear();
     resetLastProcessedTime();
   }
@@ -486,7 +500,7 @@ function loadDatabaseRecords(sheet) {
   const pendingNotices = [];
   
   if (lastRow > 1) {
-    const data = sheet.getRange(2, 1, lastRow - 1, 17).getValues();
+    const data = sheet.getRange(2, 1, lastRow - 1, 19).getValues();
     data.forEach((row, index) => {
       const rowNum = index + 2; // Offset for header (1) and 0-indexing (1)
       const msgId = row[0];
@@ -495,7 +509,9 @@ function loadDatabaseRecords(sheet) {
       const subject = row[8];  // Subject
       const category = row[11]; // Category
       const summary = row[12];  // Summary
-      const status = row[15];   // Status
+      const letterReferenceNo = row[13]; // Letter Ref No
+      const letterDate = row[14];        // Letter Date
+      const status = row[17];   // Status
       
       records.push({
         rowNum: rowNum,
@@ -512,7 +528,9 @@ function loadDatabaseRecords(sheet) {
           msgId: msgId,
           sender: sender,
           subject: subject,
-          summary: summary
+          summary: summary,
+          letterReferenceNo: letterReferenceNo,
+          letterDate: letterDate
         });
       }
     });
@@ -542,5 +560,5 @@ function testListModels() {
   const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
   const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
   Logger.log("Status: " + response.getResponseCode());
-  Logger.log("Body: " + response.getContentText().substring(0, 1500)); // Truncate log slightly
+  Logger.log("Body: " + response.getContentText().substring(0, 1500)); // Log models
 }
