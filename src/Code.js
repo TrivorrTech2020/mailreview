@@ -248,12 +248,6 @@ function processEmails() {
     // Save state iteratively to ensure that if a run crashes, we don't restart from the beginning
     maxTimeSaved = item.time;
     userProperties.setProperty("LAST_PROCESSED_TIMESTAMP", maxTimeSaved.toString());
-    
-    // Add a 12-second sleep to stay comfortably within the 5 Requests Per Minute (RPM) free-tier limit
-    if (i < messagesToProcess.length - 1) {
-      Logger.log("Pacing requests. Sleeping for 12 seconds to prevent rate limits...");
-      Utilities.sleep(12000);
-    }
   }
   
   Logger.log("Finished email audit run. State updated to: " + new Date(maxTimeSaved).toISOString());
@@ -404,12 +398,9 @@ function callGeminiApi(apiKey, parts) {
       
       // Retry on 503 (Temporary Overload) or 429 (Rate Limit)
       if ((code === 503 || code === 429) && attempt < maxRetries) {
-        const sleepTime = code === 429 ? 25000 : delay;
-        Logger.log(`Gemini API returned status ${code}. Retrying in ${sleepTime}ms... (Attempt ${attempt}/${maxRetries})`);
-        Utilities.sleep(sleepTime);
-        if (code === 503) {
-          delay *= 2; // double the delay duration only for 503s
-        }
+        Logger.log(`Gemini API returned status ${code}. Retrying in ${delay}ms... (Attempt ${attempt}/${maxRetries})`);
+        Utilities.sleep(delay);
+        delay *= 2; // double the delay duration
         continue;
       }
       
